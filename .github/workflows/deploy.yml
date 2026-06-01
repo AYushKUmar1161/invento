@@ -27,6 +27,8 @@ jobs:
         pip install email-validator pytest httpx
 
     - name: Run Backend Tests
+      env:
+        DATABASE_URL: sqlite://
       run: |
         cd backend
         python -m pytest -v
@@ -58,4 +60,8 @@ jobs:
     - name: Trigger Render Deploy Hook
       if: success()
       run: |
-        curl -X GET "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+        if [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+          curl -X GET "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+        else
+          echo "Render deploy hook not set, skipping."
+        fi
