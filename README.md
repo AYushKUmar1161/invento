@@ -1,230 +1,362 @@
-# Invento - Inventory & Order Management System
+# 📦 Invento - Production DevOps Deployment Guide
 
-A production-ready full-stack Inventory & Order Management System named **Invento**, engineered with a high-performance **FastAPI** backend and a modern **React 19 + Material UI (MUI)** client panel. The application includes transaction-isolated order processing, automated live stock level deductions, low-inventory notifications, and comprehensive Docker containerization.
-
-## 🚀 Tech Stack
-
-### Backend
-* **Core**: Python 3.12, FastAPI
-* **ORM & Database Connection**: SQLAlchemy (2.0)
-* **Migrations**: Alembic
-* **Validations**: Pydantic v2
-* **Testing**: Pytest & HTTPX client
-
-### Frontend
-* **Core**: React 19, Vite, React Router v6
-* **Component Framework**: Material UI (MUI v5)
-* **API Client**: Axios
-
-### Containerization & Database
-* **Database Engine**: PostgreSQL 16
-* **Deployment Packaging**: Docker & Multi-stage Docker Compose
+This repository contains the full-stack codebase and DevOps blueprints for **Invento**, a production-ready Inventory & Order Management System. It is engineered with a high-performance **FastAPI** backend, transaction-isolated order processing, low-inventory notifications, and a modern **React 19 + Material UI** client panel, fully optimized for cloud deployment.
 
 ---
 
-## 📂 Project Architecture
+## 🚀 Live Production URL Registry
 
+* **GitHub Repository URL**: [https://github.com/AYushKUmar1161/invento](https://github.com/AYushKUmar1161/invento)
+* **Docker Hub Image (Backend)**: `docker.io/ayushkumar1161/invento-backend:latest`
+* **Docker Hub Image (Frontend)**: `docker.io/ayushkumar1161/invento-frontend:latest`
+* **Render Backend URL**: `https://invento-backend-n5b0.onrender.com` (Example)
+* **Vercel Frontend URL**: `https://invento-frontend.vercel.app` (Example)
+
+---
+
+## 🛠️ DevOps Blueprints & Runtimes
+
+### 1. Production-Ready Dockerfile for Backend (`backend/Dockerfile`)
+Uses a secure, multi-stage architecture to separate compiler environments from runtime execution. It runs as a **non-root user** (`appuser` with UID 1000) for security.
+
+```dockerfile
+# Stage 1: Builder
+FROM python:3.12-slim AS builder
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# Stage 2: Runner (Production)
+FROM python:3.12-slim AS runner
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH=/home/appuser/.local/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd -u 1000 -m appuser
+USER appuser
+COPY --from=builder --chown=appuser:appuser /root/.local /home/appuser/.local
+COPY --chown=appuser:appuser . .
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
+CMD ["sh", "start.sh"]
+```
+
+---
+
+### 2. Production-Ready Dockerfile for Frontend (`frontend/Dockerfile`)
+Compiles Vite + React 19 static assets in a build container, then hosts them with high-performance Alpine Nginx. Includes deep-routing fallback configuration.
+
+```dockerfile
+# Stage 1: Build Assets
+FROM node:22-alpine AS build-stage
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --legacy-peer-deps
+COPY . .
+ENV VITE_API_URL=""
+RUN npm run build
+
+# Stage 2: Serve via Nginx
+FROM nginx:alpine AS production-stage
+COPY --from=build-stage /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+---
+
+### 3. Production Local Orchestration (`docker-compose.yml`)
+Brings up a PostgreSQL 16 server, waits until it is fully healthy, then launches the backend with automatic migrations/seeding, and routes the frontend dynamically.
+
+```yaml
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: inventory_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: inventory_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d inventory_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: inventory_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgrespassword@postgres:5432/inventory_db
+      - SECRET_KEY=your-super-secret-key-for-development-use-only
+      - ALLOWED_ORIGINS=http://localhost:5173,http://localhost
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: inventory_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+```
+
+---
+
+### 4. Excluded Artifact Filters (`.dockerignore` files)
+
+#### Backend (`backend/.dockerignore`)
 ```text
-invento/
-├── backend/
-│   ├── app/
-│   │   ├── api/          # FastAPI routes (products, customers, orders, stats)
-│   │   ├── core/         # Global configuration using Pydantic settings
-│   │   ├── database/     # SQLAlchemy engine, session maker & Base
-│   │   ├── models/       # Declarative database tables models
-│   │   ├── schemas/      # Pydantic data validation schemas
-│   │   ├── services/     # Business logic & transaction isolation layer
-│   │   └── main.py       # App launchpad, CORS rules & exception mapping
-│   ├── alembic/          # Database migrations folder
-│   ├── tests/            # Test suite (SKUs, transaction rollbacks, etc)
-│   ├── requirements.txt  # Pin-point python dependencies
-│   ├── seed.py           # Database seeder script
-│   ├── start.sh          # Orchestrated table-builder and startup shell script
-│   ├── .env.example
-│   └── Dockerfile
-├── frontend/
-│   ├── src/
-│   │   ├── components/   # Common shared visual parts
-│   │   ├── context/      # Notification Snackbar context
-│   │   ├── layouts/      # Dashboard layouts with collapsible sidebars
-│   │   ├── pages/        # Dashboard, Products, Customers, Orders
-│   │   ├── services/     # Axios api config and error parsers
-│   │   ├── App.jsx       # Theme system configuration and routing
-│   │   ├── index.css     # Dark reset scrollbars and glow animations
-│   │   └── main.jsx      # React launcher entrypoint
-│   ├── public/           # Shared assets
-│   ├── nginx.conf        # Custom Nginx server configuration for deep routing
-│   ├── package.json
-│   ├── vite.config.js
-│   ├── .env.example
-│   └── Dockerfile
-├── docker-compose.yml    # Main orchestration docker config
-├── .gitignore
-└── README.md
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+venv
+.env
+.pytest_cache
+tests
+Dockerfile
+.dockerignore
+```
+
+#### Frontend (`frontend/.dockerignore`)
+```text
+.git
+.gitignore
+node_modules
+dist
+.env
+Dockerfile
+.dockerignore
 ```
 
 ---
 
-## ⚡ Quick Start
+## ☁️ 3. Cloud Deployment Procedures
 
-### Option A: Run via Docker Compose (Recommended)
-
-1. Make sure you have **Docker** and **Docker Compose** installed.
-2. In the project root folder, boot the entire stack by executing:
-   ```bash
-   docker-compose up --build
-   ```
-3. Docker Compose will launch:
-   * **PostgreSQL Database** on port `5432`
-   * **FastAPI Backend** on port `8000` (docs available at [http://localhost:8000/docs](http://localhost:8000/docs))
-   * **React Frontend Dashboard** on port `80` (accessible at [http://localhost](http://localhost))
-4. The database is **automatically seeded** with a rich portfolio of electronics products (some low-stock and out-of-stock), client customer profiles, and transaction order receipts so the visual dashboard looks alive immediately!
-
----
-
-### Option B: Local Manual Setup (Without Docker)
-
-#### 1. Setup Backend
-1. Open a terminal and enter the `backend/` folder:
-   ```bash
-   cd backend
-   ```
-2. Create and activate a Python virtual environment:
-   ```bash
-   python -m venv venv
-   # On Windows:
-   venv\Scripts\activate
-   # On Linux/macOS:
-   source venv/bin/activate
-   ```
-3. Install requirements:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Copy environment configuration and edit if needed:
-   ```bash
-   copy .env.example .env
-   ```
-5. Seed database & run server:
-   ```bash
-   python seed.py
-   python app/main.py
-   ```
-
-#### 2. Setup Frontend
-1. Open a new terminal and enter the `frontend/` folder:
-   ```bash
-   cd frontend
-   ```
-2. Install npm dependencies:
-   ```bash
-   npm install
-   ```
-3. Copy environment configuration:
-   ```bash
-   copy .env.example .env
-   ```
-4. Start the Vite React development server:
-   ```bash
-   npm run dev
-   ```
-5. Open your browser and navigate to [http://localhost:5173](http://localhost:5173).
-
----
-
-## 🛡️ Business Logic & Validations
-
-1. **SKU Uniqueness**: Rejects duplicate SKU codes across all products.
-2. **Email Uniqueness**: Restricts customer registry from containing duplicated email entries.
-3. **Transaction Rollbacks**: Ordering relies on a nested database transaction. If stock check fails or item allocations throw exceptions, the entire process is immediately rolled back, safeguarding stock values.
-4. **Live Stock Decrements**: After successfully placing an order, stock values are instantly decremented in the inventory catalog.
-5. **No Negative Stock**: Database constraints and Pydantic validation schemas enforce that price must be `> 0`, order quantities `> 0`, and inventory stocks `>= 0`.
-
----
-
-## 🧪 Testing
-
-The backend contains a test suite built on `pytest` using an isolated **in-memory SQLite** engine. This tests all constraints (SKU/Email uniqueness), order transactions, and stock limits cleanly.
-
-Run testing commands:
-```bash
-cd backend
-pytest -v
-```
-
----
-
-## 🗺️ REST API Documentation
-
-FastAPI dynamically serves Swagger API docs at `http://localhost:8000/docs`.
-
-### Products
-* `POST /api/products` — Create a product.
-* `GET /api/products` — List all products (supports optional `?search=Query` matching on name/SKU).
-* `GET /api/products/{id}` — Get single product.
-* `PUT /api/products/{id}` — Edit product values.
-* `DELETE /api/products/{id}` — Delete a product.
-
-### Customers
-* `POST /api/customers` — Register a client.
-* `GET /api/customers` — List customers (supports `?search=` matching on name/email).
-* `GET /api/customers/{id}` — Get single customer details.
-* `DELETE /api/customers/{id}` — Delete customer account.
-
-### Orders
-* `POST /api/orders` — Place order and decrement stocks.
-  * **Payload Schema**:
-    ```json
-    {
-      "customer_id": 1,
-      "items": [
-        { "product_id": 2, "quantity": 1 },
-        { "product_id": 5, "quantity": 3 }
-      ]
-    }
-    ```
-* `GET /api/orders` — List order receipts history.
-* `GET /api/orders/{id}` — Get specific invoice summary.
-* `DELETE /api/orders/{id}` — Cancel/remove order.
-
-### Dashboard
-* `GET /api/dashboard` — Statistics aggregation.
-  * **Response Format**:
-    ```json
-    {
-      "total_products": 6,
-      "total_customers": 3,
-      "total_orders": 2,
-      "low_stock_products": [
-        { "id": 2, "name": "UltraWide Monitor 34\"", "sku": "MON-UW34", "price": 549.99, "stock_quantity": 3 }
-      ]
-    }
-    ```
-
----
-
-## ☁️ Deployment Guidelines
-
-### Backend Deployment (Render)
-1. Register a **Render PostgreSQL database** service and copy its `Internal Database URL`.
-2. Deploy a new **Render Web Service** pointing to your GitHub repository.
+### 5. Render PostgreSQL Provisioning
+1. Log in to [Render.com](https://render.com).
+2. Click **New** ➔ **PostgreSQL**.
 3. Configure settings:
-   * **Runtime**: `Python`
-   * **Root Directory**: `backend`
-   * **Build Command**: `pip install -r requirements.txt`
-   * **Start Command**: `python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-4. Add the following **Environment Variables** in Render Settings:
-   * `DATABASE_URL` — *(Paste the Render PostgreSQL URL)*
-   * `SECRET_KEY` — *(A secure randomly generated key)*
-   * `ALLOWED_ORIGINS` — `https://your-frontend.vercel.app`
+   - **Name**: `inventory_db`
+   - **Database Name**: `inventory_db`
+   - **User**: `postgres`
+   - **Plan**: `Free`
+4. Click **Create Database**. Copy the **Internal Database URL** for your backend.
 
-### Frontend Deployment (Vercel)
-1. Go to Vercel and create a new project pointing to your GitHub repository.
-2. Configure settings:
-   * **Framework Preset**: `Vite`
-   * **Root Directory**: `frontend`
-   * **Build Command**: `npm run build`
-   * **Output Directory**: `dist`
-3. Under Environment Variables, add:
-   * `VITE_API_URL` — *(Paste your deployed Render Backend URL, e.g., `https://your-backend.onrender.com`)*
-4. Click **Deploy**. Vercel will build the frontend assets and host the dashboard automatically.
+---
+
+### 6. Render Backend Deployment Steps
+1. On Render, click **New** ➔ **Web Service**.
+2. Connect your Git repository: `https://github.com/AYushKUmar1161/invento.git`.
+3. Configure settings:
+   - **Name**: `invento-backend`
+   - **Root Directory**: `backend`
+   - **Runtime**: `Python 3`
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+4. Add the required **Environment Variables** (see Section 8).
+5. Click **Deploy Web Service** and copy your public URL.
+
+---
+
+### 7. Vercel Frontend Deployment Steps
+1. Log in to [Vercel](https://vercel.com).
+2. Import your GitHub repository.
+3. Configure settings:
+   - **Root Directory**: `frontend`
+   - **Framework Preset**: `Vite`
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+4. Add the required **Environment Variables** (see Section 8).
+5. Click **Deploy**. Vercel will build the frontend assets. Deep SPA routing is automatically handled by the pre-configured [vercel.json](file:///c:/Users/ADMIN/OneDrive/Desktop/ethara/frontend/vercel.json) file.
+
+---
+
+### 8. Environment Variables Specification
+
+#### Backend (Render environment parameters)
+* `DATABASE_URL` ➔ *(Connection string copied from Render PostgreSQL)*
+* `SECRET_KEY` ➔ *(A cryptographically secure string)*
+* `ALLOWED_ORIGINS` ➔ `https://invento-frontend.vercel.app` *(Your Vercel URL)*
+
+#### Frontend (Vercel environment parameters)
+* `VITE_API_URL` ➔ `https://invento-backend.onrender.com` *(Your Render URL)*
+
+---
+
+### 9. Infrastructure as Code: `render.yaml`
+Deploy the entire backend stack with one click using the Render Blueprint specification:
+
+```yaml
+databases:
+  - name: inventory_db
+    databaseName: inventory_db
+    user: postgres
+    plan: free
+
+services:
+  - type: web
+    name: invento-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python seed.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: inventory_db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: "https://invento-frontend.vercel.app"
+```
+
+---
+
+### 10. Automated GitHub Actions CI/CD Workflow (`.github/workflows/deploy.yml`)
+Save this file as `.github/workflows/deploy.yml` in your repository. It automatically runs tests, builds your Docker images, pushes them to Docker Hub, and triggers Render to pull and deploy the latest code on every push to `main`!
+
+```yaml
+name: Continuous Integration & Deployment (CI/CD)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test-and-build:
+    name: Run Tests, Build and Push Images
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+
+    # 1. Setup Python & Run Backend Tests
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install Dependencies
+      run: |
+        cd backend
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install email-validator pytest httpx
+
+    - name: Run Backend Tests
+      run: |
+        cd backend
+        python -m pytest -v
+
+    # 2. Login to Docker Hub
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+    # 3. Build & Push Backend Docker Image
+    - name: Build & Push Backend Image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/invento-backend:latest
+
+    # 4. Build & Push Frontend Docker Image
+    - name: Build & Push Frontend Image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        push: true
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/invento-frontend:latest
+
+    # 5. Trigger Auto-Deploy on Render
+    - name: Trigger Render Deploy Hook
+      if: success()
+      run: |
+        curl -X GET "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+```
+
+---
+
+### 11. Docker Hub Build & Push CLI Commands
+To compile and upload the images manually:
+```bash
+docker login -u YOUR_DOCKERHUB_USERNAME
+docker build -t YOUR_DOCKERHUB_USERNAME/invento-backend:latest ./backend
+docker build -t YOUR_DOCKERHUB_USERNAME/invento-frontend:latest ./frontend
+docker push YOUR_DOCKERHUB_USERNAME/invento-backend:latest
+docker push YOUR_DOCKERHUB_USERNAME/invento-frontend:latest
+```
+
+---
+
+## 🔒 4. Security & CORS Architecture
+
+### 12. Health Check Endpoint Configuration
+FastAPI monitors health through the `/health` endpoint:
+```python
+@app.get("/health", status_code=status.HTTP_200_OK, tags=["Health"])
+def health_check():
+    return {"status": "healthy", "project": settings.PROJECT_NAME}
+```
+
+### 13. Production CORS Configuration
+Safe production CORS mapping is configured dynamically in `backend/app/main.py`:
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### 14. Production Security Best Practices
+1. **User Privilege Isolation**: Containers run on custom UIDs rather than default root layers.
+2. **Reverse Proxy Masking**: The REST backend server acts inside an internal network. The browser routes requests on a unified port `80`, fully avoiding CORS.
+3. **Database SSL**: Render database connections require `sslmode=require` query parameters to encrypt transit payloads.
+4. **Parameterized Protection**: SQLAlchemy ORM natively splits parameter tags to fully block SQL Injection attacks.
+5. **Robust Schema Validations**: Pydantic v2 enforces clean, parameterized formats before data is committed.
